@@ -6,7 +6,7 @@ _Any tests for ShajTester OpenBMC_
 
 ```
 mkdir build && cd build
-cmake ,,
+cmake ..
 cmake --build . -- -j4
 cmake --build . --target test
 ```

@@ -104,6 +104,8 @@ public:
     int val_max = 0;
     int val_min = 0;
     int last_value = 0;
+    int nan_count = 0;
+    int max_nonan = 0;
     std::map<int, int> values;
 
     ItemStat(const std::string &s) : file(s)
@@ -119,8 +121,9 @@ std::ostream& operator<<(std::ostream& os, ItemStat& it)
        << std::setw(7)  << it.flt_cnt
        << std::setw(7)  << it.val_min
        << std::setw(7)  << it.val_max
-       << std::setw(15) << it.last_value
-       << " | " << std::setw(7) << it.values.size();
+       << std::setw(9) << it.last_value
+       << " | " << std::setw(5) << it.values.size()
+       << std::setw(7) << it.max_nonan;
     return os;
 }
 
@@ -164,7 +167,8 @@ std::ostream& operator<<(std::ostream& os, DbusItemStat& it)
     os << std::setw(15) << it.name
        << std::setw(7)  << it.good_cnt
        << std::setw(7)  << it.flt_cnt
-       << " | " << std::setw(7) << it.values.size();
+       << " | " << std::setw(5) << it.values.size()
+       << std::setw(7) << it.max_nonan;
        // << std::setw(7)  << it.val_min
        // << std::setw(7)  << it.val_max
        // << std::setw(15) << it.last_value
@@ -254,13 +258,27 @@ void values_to_file(const std::vector<std::unique_ptr<DbusItemStat>> &tach_list)
 }
 
 
-std::vector<std::unique_ptr<ItemStat>> create_sysfs_list()
+std::vector<std::unique_ptr<ItemStat>> create_sysfs_list(std::vector<int> &crop)
 {
     std::vector<std::unique_ptr<ItemStat>> tach_list;
-    tach_list.reserve(sizeof(tach_name_list));
-    for(const auto &pstr : tach_name_list)
+    if(crop.size() != 0)
     {
-        tach_list.push_back(std::make_unique<ItemStat>(pstr));
+        tach_list.reserve(sizeof(crop));
+        for(const int idx : crop)
+        {
+            if(idx < tach_name_list.size())
+            {
+                tach_list.push_back(std::make_unique<ItemStat>(tach_name_list[idx]));
+            }
+        }
+    }
+    else
+    {
+        tach_list.reserve(tach_name_list.size());
+        for(const auto &pstr : tach_name_list)
+        {
+            tach_list.push_back(std::make_unique<ItemStat>(pstr));
+        }
     }
     return tach_list;
 }
@@ -281,6 +299,7 @@ void scan_sysfs(int tests, std::vector<std::unique_ptr<ItemStat>> &tach_list)
                         fs.exceptions(fs.failbit);
                         store_value(*tach, tach->last_value);
                         tach->good_cnt++;
+                        tach->nan_count++;
                         if(tach->val_min == 0)
                             tach->val_min = tach->last_value;
                         else if(tach->val_min > tach->last_value)
@@ -291,9 +310,14 @@ void scan_sysfs(int tests, std::vector<std::unique_ptr<ItemStat>> &tach_list)
                     catch(const std::ios_base::failure& e)
                     {
                         tach->flt_cnt++;
+                        if(tach->max_nonan < tach->nan_count)
+                            tach->max_nonan = tach->nan_count;
+                        tach->nan_count = 0;
                         store_value(*tach, -1);
                     }
                 });
+            if(tach->max_nonan < tach->nan_count)
+                tach->max_nonan = tach->nan_count;
             // debug_str << "type " << typeid(time_to_read).name() << " value " << time_to_read << "\n";
         }
         std::cout << "." << std::flush;
@@ -301,13 +325,27 @@ void scan_sysfs(int tests, std::vector<std::unique_ptr<ItemStat>> &tach_list)
     std::cout << "\n" << debug_str.str() << std::endl;
 }
 
-std::vector<std::unique_ptr<DbusItemStat>> create_dbus_list()
+std::vector<std::unique_ptr<DbusItemStat>> create_dbus_list(std::vector<int> &crop)
 {
     std::vector<std::unique_ptr<DbusItemStat>> tach_list;
-    tach_list.reserve(sizeof(fan_dbuspath_list));
-    for(const auto &pstr : fan_dbuspath_list)
+    if(crop.size() != 0)
     {
-        tach_list.push_back(std::make_unique<DbusItemStat>(pstr));
+        tach_list.reserve(crop.size());
+        for(const int idx : crop)
+        {
+            if(idx < tach_name_list.size())
+            {
+                tach_list.push_back(std::make_unique<DbusItemStat>(fan_dbuspath_list[idx]));
+            }
+        }
+    }
+    else
+    {
+        tach_list.reserve(fan_dbuspath_list.size());
+        for(const auto &pstr : fan_dbuspath_list)
+        {
+            tach_list.push_back(std::make_unique<DbusItemStat>(pstr));
+        }
     }
     return tach_list;
 }
@@ -341,11 +379,14 @@ void scan_dbus(int tests, std::vector<std::unique_ptr<DbusItemStat>> &tach_list,
                                 {
                                     req.value = "nan";
                                     store_value(*tach, -1);
+                                    if(tach->max_nonan < tach->nan_count)
+                                        tach->max_nonan = tach->nan_count;
                                 }
                                 else
                                 {
                                     req.value = std::to_string(int(*pval));
                                     store_value(*tach, int(*pval));
+                                    tach->nan_count++;
                                 }
                             }
                             else if(const bool *pval = std::get_if<bool>(&respData))
@@ -357,6 +398,8 @@ void scan_dbus(int tests, std::vector<std::unique_ptr<DbusItemStat>> &tach_list,
                         {
                             std::cerr << "err " << e.what() << "\n";
                             req.value = "err";
+                            if(tach->max_nonan < tach->nan_count)
+                                tach->max_nonan = tach->nan_count;
                         }
                     });
                 if(req.timer_min == 0)
@@ -408,6 +451,7 @@ int main(int argc, char const *argv[])
     args::Flag ver {parser, "ver", "version ", {'v', "version"}};
     args::ValueFlag<int> test_number {parser, "number", "test number ", {'t', "test"}, 1};
     args::ValueFlag<int> test_count {parser, "count", "count of iterations ", {'n', "count"}, 10};
+    args::ValueFlagList<int> list_crop {parser, "crop", "List crop", {'l'}};
 
     try
     {
@@ -431,14 +475,18 @@ int main(int argc, char const *argv[])
         return 1;
     }
 
-    std::cout << "Test number: " << *test_number << "\n";
-    std::cout << "Iterations count:  " << *test_count << "\n";
-
+    // std::cout << "Test number: " << *test_number << "\n";
+    // std::cout << "Iterations count:  " << *test_count << "\n";
+    // std::vector<int> crop;
+    // if(list_crop)
+    // {
+    //     std::copy(list_crop.cbegin(), list_crop.cend(), std::back_inserter(crop));
+    // }
     if(*test_number == 1)
     {
         try
         {
-            auto tach_list = create_sysfs_list();
+            auto tach_list = create_sysfs_list(args::get(list_crop));
             scan_sysfs(*test_count, tach_list);
             report(tach_list);
             values_to_file(tach_list);
@@ -456,7 +504,7 @@ int main(int argc, char const *argv[])
             boost::asio::io_service io;
             auto conn = std::make_shared<sdbusplus::asio::connection>(io, sdbusplus::bus::new_system().release());
 
-            auto dbus_list = create_dbus_list();
+            auto dbus_list = create_dbus_list(args::get(list_crop));
             scan_dbus(*test_count, dbus_list, conn);
             report(dbus_list);
             values_to_file(dbus_list);
